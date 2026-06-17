@@ -83,7 +83,8 @@ jobs:
         run: cp app/build/outputs/apk/release/app-release.apk "${{ steps.version.outputs.apk_name }}"
 
       - name: Verify APK signature
-        run: "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "${{ steps.version.outputs.apk_name }}"
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "${{ steps.version.outputs.apk_name }}"
 
       - name: Create or update GitHub Release
         env:
