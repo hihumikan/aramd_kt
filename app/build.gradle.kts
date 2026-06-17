@@ -3,6 +3,17 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val releaseStoreFile = providers.environmentVariable("ANDROID_SIGNING_STORE_FILE")
+val releaseStorePassword = providers.environmentVariable("ANDROID_SIGNING_STORE_PASSWORD")
+val releaseKeyAlias = providers.environmentVariable("ANDROID_SIGNING_KEY_ALIAS")
+val releaseKeyPassword = providers.environmentVariable("ANDROID_SIGNING_KEY_PASSWORD")
+val hasReleaseSigningConfig = releaseStoreFile.isPresent &&
+    releaseStorePassword.isPresent &&
+    releaseKeyAlias.isPresent &&
+    releaseKeyPassword.isPresent
+val appVersionCode = providers.environmentVariable("VERSION_CODE").map(String::toInt).orElse(1)
+val appVersionName = providers.environmentVariable("VERSION_NAME").orElse("1.0")
+
 android {
     namespace = "net.qqey.aramd"
     compileSdk {
@@ -15,14 +26,28 @@ android {
         applicationId = "net.qqey.aramd"
         minSdk = 34
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode.get()
+        versionName = appVersionName.get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = file(releaseStoreFile.get())
+                storePassword = releaseStorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             optimization {
                 enable = false
             }
