@@ -48,6 +48,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -75,16 +76,25 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AlarmApp(modifier: Modifier = Modifier) {
+    val context = LocalContext.current.applicationContext
     var now by remember { mutableStateOf(LocalDateTime.now()) }
+    var canScheduleExact by remember { mutableStateOf(AlarmScheduler.canScheduleExactAlarms(context)) }
     var targetHour by remember { mutableIntStateOf(7) }
     var targetMinute by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var alarms by remember { mutableStateOf(demoAlarms()) }
+    var alarms by remember { mutableStateOf(AlarmStore.load(context)) }
 
     LaunchedEffect(Unit) {
         while (true) {
             now = LocalDateTime.now()
+            canScheduleExact = AlarmScheduler.canScheduleExactAlarms(context)
             delay(1_000)
+        }
+    }
+
+    LaunchedEffect(canScheduleExact) {
+        if (canScheduleExact) {
+            AlarmScheduler.scheduleEnabled(context, alarms)
         }
     }
 
@@ -111,6 +121,12 @@ fun AlarmApp(modifier: Modifier = Modifier) {
             .toSet()
     }
 
+    fun commitAlarms(nextAlarms: List<Alarm>) {
+        val sorted = nextAlarms.sortedBy { totalMin(it.hour, it.minute) }
+        alarms = sorted
+        AlarmStore.save(context, sorted)
+    }
+
     fun addAlarms() {
         if (selected.isEmpty()) return
 
@@ -126,7 +142,8 @@ fun AlarmApp(modifier: Modifier = Modifier) {
                 )
             }
 
-        alarms = (alarms + newAlarms).sortedBy { totalMin(it.hour, it.minute) }
+        commitAlarms(alarms + newAlarms)
+        newAlarms.forEach { AlarmScheduler.schedule(context, it) }
         selected = emptySet()
     }
 
@@ -150,6 +167,17 @@ fun AlarmApp(modifier: Modifier = Modifier) {
             item {
                 ScreenBand {
                     DividerLine()
+                }
+            }
+            if (!canScheduleExact) {
+                item {
+                    ScreenBand {
+                        ExactAlarmPermissionCard(
+                            onOpenSettings = {
+                                AlarmScheduler.requestExactAlarmPermission(context)
+                            },
+                        )
+                    }
                 }
             }
             item {
@@ -200,7 +228,10 @@ fun AlarmApp(modifier: Modifier = Modifier) {
                 ScreenBand {
                     AlarmListHeader(
                         count = alarms.size,
-                        onClearAll = { alarms = emptyList() },
+                        onClearAll = {
+                            alarms.forEach { AlarmScheduler.cancel(context, it.id) }
+                            commitAlarms(emptyList())
+                        },
                     )
                 }
             }
@@ -220,16 +251,23 @@ fun AlarmApp(modifier: Modifier = Modifier) {
                             alarm = alarm,
                             now = now,
                             onToggle = {
-                                alarms = alarms.map {
+                                val updated = alarm.copy(enabled = !alarm.enabled)
+                                if (updated.enabled) {
+                                    AlarmScheduler.schedule(context, updated)
+                                } else {
+                                    AlarmScheduler.cancel(context, updated.id)
+                                }
+                                commitAlarms(alarms.map {
                                     if (it.id == alarm.id) {
-                                        it.copy(enabled = !it.enabled)
+                                        updated
                                     } else {
                                         it
                                     }
-                                }
+                                })
                             },
                             onDelete = {
-                                alarms = alarms.filterNot { it.id == alarm.id }
+                                AlarmScheduler.cancel(context, alarm.id)
+                                commitAlarms(alarms.filterNot { it.id == alarm.id })
                             },
                         )
                     }
@@ -324,6 +362,50 @@ private fun DividerLine() {
             .height(1.dp)
             .background(AlarmColors.Border),
     )
+}
+
+@Composable
+private fun ExactAlarmPermissionCard(onOpenSettings: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp)
+            .clip(shape)
+            .background(AlarmColors.Card)
+            .border(1.dp, AlarmColors.NextBorder, shape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "正確なアラーム権限が必要です",
+            color = AlarmColors.Foreground,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = "時刻どおりに鳴らすため、Androidの「アラームとリマインダー」設定で許可してください。",
+            color = AlarmColors.MutedForeground,
+            fontSize = 12.sp,
+            lineHeight = 18.sp,
+        )
+        Box(
+            modifier = Modifier
+                .height(40.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(AlarmColors.Primary)
+                .clickable(onClick = onOpenSettings)
+                .padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "設定を開く",
+                color = AlarmColors.PrimaryForeground,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
 }
 
 @Composable
@@ -769,13 +851,6 @@ private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-private data class Alarm(
-    val id: String,
-    val hour: Int,
-    val minute: Int,
-    val enabled: Boolean,
-)
-
 private data class TimeSlot(
     val hour: Int,
     val minute: Int,
@@ -799,13 +874,6 @@ private object AlarmColors {
     val SelectedSubText = Color(0x990A0F1A)
 }
 
-private fun demoAlarms() = listOf(
-    Alarm(id = "demo-1", hour = 6, minute = 45, enabled = true),
-    Alarm(id = "demo-2", hour = 6, minute = 50, enabled = true),
-    Alarm(id = "demo-3", hour = 6, minute = 55, enabled = true),
-    Alarm(id = "demo-4", hour = 7, minute = 0, enabled = true),
-)
-
 private fun slotsAround(centerHour: Int, centerMinute: Int): List<TimeSlot> =
     (-30..30 step 5).map { offset ->
         var totalMinutes = centerHour * 60 + centerMinute + offset
@@ -818,12 +886,6 @@ private fun slotsAround(centerHour: Int, centerMinute: Int): List<TimeSlot> =
             offset = offset,
         )
     }
-
-private fun pad(number: Int) = number.toString().padStart(2, '0')
-
-private fun alarmKey(hour: Int, minute: Int) = "${pad(hour)}:${pad(minute)}"
-
-private fun totalMin(hour: Int, minute: Int) = hour * 60 + minute
 
 @Preview(showBackground = true)
 @Composable
